@@ -11,10 +11,11 @@ This script was built to help speed up PoCs and test/staging environments for qu
 2. PingFederate with PingOne provisioner configured
 3. Active Directory Domain Controller with Administrator privileges
 3. PingOne access token
+4. Powershell 7 or above
 
 ## Usage
 
 :warning: **Use with cautious**: This script modifies your Domain Controller, don't use it in production environments!
-1. Download and run the script from an Administrator Powershell command prompt.
-3. Run the script and follow the instructions.
+1. Clone the repository 
+2. From Powershell 7 with Administrator privileges, Run `Configure-Passwordless.ps1` and follow the instructions.
 4. (Optional) User the `-Debug` flag to get debug level output.
