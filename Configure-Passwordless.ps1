@@ -1,12 +1,12 @@
 ﻿#Execution Order
 #1. Run validations - admin rights and AD module
-#2. Select PingOne Enviornemnt
+#2. Select PingOne Environment
 #3. Create CA certificate, install to NTAuth store, install to Trusted Root store in GPO
 #4. Set unique user attribute
 #5. Create Windows Passwordless Flow
 #6. Create SOP, use The created flow
-#7. Create Application, use the created SOP and CA certificate
-#8. Issue a KDC certificate and install it to the Personal store
+#7. Create an Application, use the created SOP and CA certificate
+#8. Issue a KDC certificate and install it in the Personal store
 
 $apiEnviornements="environments"
 $apiKeys="keys"
@@ -38,6 +38,7 @@ function Run{
         $global:accessToken =  $global:accessToken | ConvertTo-SecureString -AsPlainText
     }
     $global:apiBase=getBasueUrlFromToken
+    
     ############Read Env
     selectEnv
     Write-Host "Selected enviornment: " $global:envId " " $global:envName
@@ -48,7 +49,7 @@ function Run{
 
     ############Make External ID Unique
     Write-Host "Setting ExternalID Attribute as Unique"
-    setExternalIDUnique
+    setUniqueDirectoryAttribute
 
     ############Create Flow Definition 
     Write-Host "Creating Authentication Flow"
@@ -103,7 +104,7 @@ function createCACertificate{
     $caCertOU = Read-Host "Organizational Unit []"
     $caCertL = Read-Host "City []"
     $caCertST = Read-Host "State []"
-    $caCertC = Read-Host "Country []"
+    $caCertC = Read-Host "Country (2 letter code) []"
     $caCertDn="cn=$caCertCn, O=$caCertO, OU=$caCertOU, L=$caCertL, ST=$caCertST, C=$caCertC"
 
     $request=@{
@@ -128,7 +129,7 @@ function createCACertificate{
     Write-Host "Done $certFileName"
 
     Write-Host "Installing certificate to Enterprise NTAuth store..."
-    if ((Read-Host "Do you whish to skip this step? (y/n)").ToLower() -ne "y") {Write-Host "Skiping..." return}
+    if ((Read-Host "Do you wish to skip this step? (y/n)").ToLower() -ne "y") {Write-Host "Skiping..." return}
     Write-Host 'certutil -dspublish -f "'$caCertCN'.crt" NTAuthCA'
     $error.Clear()
     certutil -dspublish -f "$caCertCN.crt" NTAuthCA
@@ -141,15 +142,15 @@ function createCACertificate{
     installCACertGpo -CertFilePath $certFileName
 }
 
-function setExternalIDUnique{
+function setUniqueDirectoryAttribute{
     $defaultAttributeName="externalId"
-    if (!($attributeName = Read-Host "Common Name [$defaultAttributeName]")) { $attributeName = $defaultAttributeName }
+    if (!($global:attributeName = Read-Host "Common Name [$defaultAttributeName]")) { $global:attributeName = $defaultAttributeName }
 
     $schemas=Invoke-API -Method 'GET' -Endpoint $apiSchemas
     $attributes=Invoke-API -Method 'GET' -Url $schemas._embedded.schemas._links.attributes.href
     $attributes._embedded.attributes  | Foreach-Object -Process{
-        if ($_.name -eq "$attributeName"){
-            $externalIdLink= $_._links.self.href
+        if ($_.name -eq "$global:attributeName"){
+            $link= $_._links.self.href
         }
     }
     $request=@{
@@ -157,7 +158,7 @@ function setExternalIDUnique{
         "unique" = $true
         "enabled" = $true
     }
-    Invoke-API -Method 'PATCH' -Url $externalIdLink -Body $request
+    Invoke-API -Method 'PATCH' -Url $link -Body $request
 
 }
 
@@ -173,7 +174,7 @@ function createFlowDefinition{
             "lookup-user": {
             "configuration": {
                 "matchAttributes": [
-                "externalId"
+                "'$global:attributeName'"
                 ],
                 "matchPingOneUsersOnly": false
             },
@@ -301,7 +302,7 @@ function createApp{
 
 function kdcCert{
 
-    if ((Read-Host "Do you whish to continue execution of this step? (y/n)").ToLower() -ne "y") {Write-Host "Skiping..." return}
+    if ((Read-Host "Do you wish to continue execution of this step? (y/n)").ToLower() -ne "y") {Write-Host "Skiping..." return}
     $dnsName=[System.Net.DNS]::GetHostByName($Null).hostname
     $config='
         [newrequest]
@@ -477,7 +478,7 @@ function installCACertGpo{
     )
 
     Write-Host "Installing CA Certificate to Group Policy..."
-    if ((Read-Host "Do you whish to continue execution this step? (y/n)").ToLower() -ne "y") {Write-Host "Skiping..." return}
+    if ((Read-Host "Do you wish to continue execution this step? (y/n)").ToLower() -ne "y") {Write-Host "Skiping..." return}
     $defaultPolicyName = "Default Domain Policy"
     if (!($policyName = Read-Host "GPO Name [$defaultPolicyName]")) { $policyName = $defaultPolicyName }
     $gpo = Get-GPO -Name $policyName
