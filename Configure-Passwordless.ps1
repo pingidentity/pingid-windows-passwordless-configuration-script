@@ -17,6 +17,7 @@ $apiApplications="applications"
 $date=Get-Date -UFormat "%m-%d-%Y"
 
 function RunValidations{
+    #TODO: Add Powershell 7 validation
     $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if(!$currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){
         Write-Error "Missing administrative rights, can not execute"
@@ -69,7 +70,8 @@ function Run{
     kdcCert
 
     Write-Host "To install PingID Windows Login Passwordless on the endpoint PC Run the following command:"
-    Write-Host "  WinLogin_passwordless_1.0_installer.exe /EnvID=$global:EnvId /AppID=$global:AppId /AppSecret=$global:AppSecret"
+    #TODO: Fix installer name and flags, add link to docs
+    Write-Host "Installer flags: /EnvID=$global:EnvId /AppID=$global:AppId /AppSecret=$global:AppSecret"
     Write-Host "Done"
 }
 function selectEnv{
@@ -163,6 +165,7 @@ function setUniqueDirectoryAttribute{
 }
 
 function createFlowDefinition{
+    #TODO: Update trigger type
     $flowDef=ConvertFrom-Json -InputObject '{
         "name": "Windows Passwordless - auto-generatd ",
         "enabled": true,
@@ -246,6 +249,7 @@ function createFlowDefinition{
 
 function createSop{
     $sopReq = ConvertFrom-Json -InputObject '{"default":false,"name":"Windows_Passwordless_auto_generatd_","environmentId":null}'
+    #TODO: Update trigger
     $actionsReq = ConvertFrom-Json -InputObject '{"priority":1,"type":"EXPERIENCE","flowDefinition":{"id":""}}'
     $sopReq.name += $date
     $actionsReq.flowDefinition.id=$global:flowId
@@ -259,6 +263,7 @@ function createSop{
 }
 
 function createApp{
+    #TODO: Update the redirect URI
     $appsReq= ConvertFrom-Json -InputObject '{
         "enabled": "true",
         "redirectUris": [
@@ -316,7 +321,7 @@ function kdcCert{
         ;Note 2.5.29.17 is the OID for a SAN extension.
         2.5.29.17 = "{text}"
         _continue_ = "dns='+$dnsName+'&"'
-
+    #TODO: Change to TEMP path
     $config | Out-File -FilePath '.\confg.temp.inf'
     Write-Host 'Creating certificate request: kdc.req'
     certreq -new 'confg.temp.inf' 'kdc.req'
