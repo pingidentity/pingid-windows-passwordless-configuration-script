@@ -17,20 +17,32 @@ $apiApplications="applications"
 $date=Get-Date -UFormat "%m-%d-%Y"
 
 function RunValidations{
-    #TODO: Add Powershell 7 validation
+    if ($PSVersionTable.PSVersion.Major -lt 7) {
+        Write-Error "PowerShell 7 and above is required"
+        Exit 1
+    }
+
     $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     if(!$currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){
         Write-Error "Missing administrative rights, can not execute"
         Exit 1
     }
 
-    if (!(Get-Module -ListAvailable -Name 'ActiveDirectory')){
-        Write-Error "Missing module, this script must run on Active Directory server"
+    $checkAD=Get-Service 'Active Directory Domain Services'
+    if ($checkAD.Status -ne 'Running'){
+        Write-Error "Active Directory Domain Services not running"
+        Exit 1
+    }
+	
+	$checkKDC=Get-Service 'Kerberos Key Distribution Center'
+    if ($checkKDC.Status -ne 'Running'){
+        Write-Error "Kerberos Key Distribution Center not running"
         Exit 1
     }
 }
+
 function Run{
-    Write-Host "Welcome to PingID Windows Passwordless configuration wizard"
+    Write-Host "Welcome to PingID Windows Passwordless configuration wizard`n"
 
     RunValidations
     if (!$global:accessToken){
@@ -42,38 +54,40 @@ function Run{
     
     ############Read Env
     selectEnv
-    Write-Host "Selected enviornment: " $global:envId " " $global:envName
+    Write-Host "`nSelected enviornment: " $global:envId " " $global:envName
 
     ############Create CA
-    Write-Host "Creating an issuance (CA) certificate"
+    Write-Host "`nCreating an issuance (CA) certificate"
     createCACertificate
 
     ############Make External ID Unique
-    Write-Host "Setting ExternalID Attribute as Unique"
+    Write-Host "`nSetting ExternalID Attribute as Unique"
     setUniqueDirectoryAttribute
 
     ############Create Flow Definition 
-    Write-Host "Creating Authentication Flow"
+    Write-Host "`nCreating Authentication Flow"
     createFlowDefinition
 
     ############Create SOP
-    Write-Host "Creating Signon Policy"
+    Write-Host "`nCreating Signon Policy"
     createSop
 
     ############Create Application
-    Write-Host "Creating OIDC Application"
-    #TODO: Fix App configation (redirect URL etc...)
+    Write-Host "`nCreating OIDC Application"
     createApp
 
     ###########Create KDC Cert
-    Write-Host "Creating KDC certificate"
+    Write-Host "`nCreating KDC certificate"
     kdcCert
 
-    Write-Host "To install PingID Windows Login Passwordless on the endpoint PC Run the following command:"
-    #TODO: Fix installer name and flags, add link to docs
-    Write-Host "Installer flags: /EnvID=$global:EnvId /AppID=$global:AppId /AppSecret=$global:AppSecret"
-    Write-Host "Done"
+    gpupdate /force
+    Write-Host "`n`n`n`n`n"
+
+    Write-Host "To install PingID Windows Login Passwordless on the client machine, run the installer with the following flags:"
+    Write-Host "/EnvID=$global:EnvId `n/AppID=$global:AppId `n/AppSecret=$global:AppSecret"
+    Write-Host "for additional information, see: https://docs.pingidentity.com/bundle/pingid/page/lkz1629022490771.html"
 }
+
 function selectEnv{
     $environments = Invoke-Api -Method 'GET' -QueryParams 'expand=billOfMaterials'
     $i=1;
@@ -126,15 +140,15 @@ function createCACertificate{
     $certLink = $cert._links.self.href
     $global:IssuanceCertId=$cert.id
     Write-Host "Downloading certificate: $certLink..."
-    Invoke-Api -Method 'GET' -Endpoint $apiKeys -ResourceId $cert.id -AsPem $true -OutFile "$caCertCN.crt"
-    $certFileName = "$(Get-Location)\$caCertCN.crt"
+    Invoke-Api -Method 'GET' -Endpoint $apiKeys -ResourceId $cert.id -AsPem $true -OutFile "$caCertCN.cer"
+    $certFileName = "$(Get-Location)\$caCertCN.cer"
     Write-Host "Done $certFileName"
 
     Write-Host "Installing certificate to Enterprise NTAuth store..."
     if ((Read-Host "Do you wish to skip this step? (y/n)").ToLower() -ne "y") {Write-Host "Skiping..." return}
-    Write-Host 'certutil -dspublish -f "'$caCertCN'.crt" NTAuthCA'
+    Write-Host 'certutil -dspublish -f "'$caCertCN'.cer" NTAuthCA'
     $error.Clear()
-    certutil -dspublish -f "$caCertCN.crt" NTAuthCA
+    certutil -dspublish -f "$caCertCN.cer" NTAuthCA
     write-debug "ExitCode: $lastExitCode"
     if ($lastExitCode -ne 0) {
          Write-Error "Failed To Execute Command: "
@@ -165,81 +179,78 @@ function setUniqueDirectoryAttribute{
 }
 
 function createFlowDefinition{
-    #TODO: Update trigger type
-    $flowDef=ConvertFrom-Json -InputObject '{
+    $flowDefStr='{
         "name": "Windows Passwordless - auto-generatd ",
         "enabled": true,
+        "description": "This is an out-of-the-box flow that can be used to allow users to login to a Windows machine without a password.",
         "trigger": {
-            "type": "EXPERIENCE",
+            "type": "SIGN_ON_POLICY",
             "next": "lookup-user"
         },
         "stepDefinitions": {
             "lookup-user": {
-            "configuration": {
-                "matchAttributes": [
-                "'$global:attributeName'"
-                ],
-                "matchPingOneUsersOnly": false
-            },
-            "input": {
-                "identifier": "${flow.inputs.context.authorizationRequest.loginHint}"
-            },
-            "outlets": {
-                "PING_ONE_USER_MATCHED": {
-                "next": "machine-passwordless",
-                "displayName": "PingOne User Matched"
+                "type": "USER_LOOKUP",
+                "description": "Look up a user in the directory with an identifier to determine the authentication authority.",
+                "configuration": {
+                    "matchAttributes": [
+                        "' + $global:attributeName + '"
+                    ],
+                    "matchPingOneUsersOnly": false
                 },
-                "IDENTITY_PROVIDER_USER_MATCHED": {
-                "next": "machine-passwordless",
-                "displayName": "Identity Provider User Matched"
+                "input": {
+                    "identifier": "${flow.inputs.context.authorizationRequest.loginHint}"
+                },
+                "outlets": {
+                    "PING_ONE_USER_MATCHED": {
+                        "next": "machine-passwordless"
+                    },
+                    "IDENTITY_PROVIDER_USER_MATCHED": {
+                        "next": "machine-passwordless"
+                    }
                 }
-            },
-            "type": "USER_LOOKUP",
-            "displayName": "Lookup User"
             },
             "machine-passwordless": {
-            "configuration": {
-                "offlineMode": false
-            },
-            "input": {
-                "user": {
-                "id": "${steps.lookup-user.outputs.user.id}",
-                "username": "${steps.lookup-user.outputs.user.username}"
+                "type": "MACHINE_PASSWORDLESS",
+                "description": "Authenticate the user with PingID. Used for Windows Login - Passwordless.",
+                "configuration": {
+                    "offlineMode": true
                 },
-                "application": {
-                "id": "${flow.inputs.context.application.id}"
+                "input": {
+                    "user": {
+                        "id": "${steps.lookup-user.outputs.user.id}",
+                        "username": "${steps.lookup-user.outputs.user.username}"
+                    },
+                    "application": {
+                        "id": "${flow.inputs.context.application.id}"
+                    }
+                },
+                "outlets": {
+                    "SUCCEEDED": {
+                        "next": "complete-flow"
+                    }
                 }
-            },
-            "outlets": {
-                "SUCCEEDED": {
-                "next": "complete-flow",
-                "displayName": "Succeeded"
-                }
-            },
-            "type": "MACHINE_PASSWORDLESS",
-            "displayName": "Machine Passwordless"
             },
             "complete-flow": {
-            "configuration": {
-                "result": "REDIRECT"
-            },
-            "input": {
-                "parameters": {
-                "flowExecutionId": "${flow.id}"
+                "type": "COMPLETE_FLOW",
+                "description": "This step redirects the browser to the URI defined by the redirectUri request parameter, if present. The URI needs to be whitelisted in the trigger configuration in order to redirect to a location outside of PingOne.",
+                "configuration": {
+                    "result": "COMPLETE"
                 },
-                "context": {
-                "amr": "${steps.machine-passwordless.outputs.amr}",
-                "user": {
-                    "id": "${steps.lookup-user.outputs.user.id}"
+                "input": {
+                    "context": {
+                        "amr": [
+                            "${steps.machine-passwordless.outputs.amr}"
+                        ],
+                        "user": {
+                            "id": "${steps.lookup-user.outputs.user.id}"
+                        }
+                    }
                 }
-                }
-            },
-            "type": "COMPLETE_FLOW",
-            "displayName": "Complete Flow"
             }
         }
-        }'
+    }'
     
+    $flowDef=ConvertFrom-Json -InputObject $flowDefStr
     $flowDef.name += $date
     $flow=Invoke-Api -Method 'POST' -Body $flowDef -endpoint $apiFlowDefinitions
     $global:flowId = $flow.id
@@ -249,7 +260,6 @@ function createFlowDefinition{
 
 function createSop{
     $sopReq = ConvertFrom-Json -InputObject '{"default":false,"name":"Windows_Passwordless_auto_generatd_","environmentId":null}'
-    #TODO: Update trigger
     $actionsReq = ConvertFrom-Json -InputObject '{"priority":1,"type":"EXPERIENCE","flowDefinition":{"id":""}}'
     $sopReq.name += $date
     $actionsReq.flowDefinition.id=$global:flowId
@@ -263,11 +273,10 @@ function createSop{
 }
 
 function createApp{
-    #TODO: Update the redirect URI
     $appsReq= ConvertFrom-Json -InputObject '{
         "enabled": "true",
         "redirectUris": [
-            "https://foo.com"
+            "winlogin.pingone.com://callbackauth"
         ],
         "name": "Windows Passwordless - auto-generatd ",
         "kerberos": {
@@ -306,7 +315,6 @@ function createApp{
 }
 
 function kdcCert{
-
     if ((Read-Host "Do you wish to continue execution of this step? (y/n)").ToLower() -ne "y") {Write-Host "Skiping..." return}
     $dnsName=[System.Net.DNS]::GetHostByName($Null).hostname
     $config='
@@ -321,20 +329,19 @@ function kdcCert{
         ;Note 2.5.29.17 is the OID for a SAN extension.
         2.5.29.17 = "{text}"
         _continue_ = "dns='+$dnsName+'&"'
-    #TODO: Change to TEMP path
-    $config | Out-File -FilePath '.\confg.temp.inf'
+    $config | Out-File -FilePath $env:TEMP\confg.temp.inf
     Write-Host 'Creating certificate request: kdc.req'
-    certreq -new 'confg.temp.inf' 'kdc.req'
+    certreq -new $env:TEMP\confg.temp.inf $env:TEMP\kdc.req
     if ($lastExitCode -ne 0) {
          Write-Error "Failed To Execute Command: "
          Exit $lastExitCode
     }
 
     Write-Host "Issuing certificate from the request, using issuace certificate ID: $global:IssuanceCertId"
-    Invoke-MultipartFormDataUpload -Uri $global:appLink'/kdcCSR?validityDuration=31536000' -InFile 'kdc.req' -OutFile '.\kdc.cer'
+    Invoke-MultipartFormDataUpload -Uri $global:appLink'/kdcCSR?validityDuration=31536000' -InFile $env:TEMP\kdc.req -OutFile $env:TEMP\kdc.cer
 
     Write-Host 'Installing certificate to Local Macine, "Personal" key storage'
-    certreq -accept -machine -f 'kdc.cer'
+    certreq -accept -machine -f $env:TEMP\kdc.cer
     if ($lastExitCode -ne 0) {
         Write-Error "Failed To Execute Command: "
         Exit $lastExitCode
@@ -524,7 +531,6 @@ function installCACertGpo{
          }else{
              Write-Host "Certificate already exists in Trusted Root CA store"
          }
-        gpupdate /force
     }catch{
         Write-Error $_.Exception
         Exit 1
