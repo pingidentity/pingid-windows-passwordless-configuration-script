@@ -15,6 +15,7 @@ $apiFlowDefinitions="flowDefinitions"
 $apiSignOnPolicies="signOnPolicies"
 $apiApplications="applications"
 $date=Get-Date -UFormat "%m-%d-%Y"
+$datetime=Get-Date -UFormat "%y%m%d%H%M%S"
 
 function RunValidations{
     if ($PSVersionTable.PSVersion.Major -lt 7) {
@@ -50,7 +51,9 @@ function Run{
     }else{
         $global:accessToken =  $global:accessToken | ConvertTo-SecureString -AsPlainText
     }
-    $global:apiBase=getBasueUrlFromToken
+    
+    $global:baseUrl=getBaseUrlFromToken
+    $global:apiBase=$global:baseUrl + "/v1"
     
     ############Read Env
     selectEnv
@@ -84,7 +87,10 @@ function Run{
     Write-Host "`n`n`n`n`n"
 
     Write-Host "To install PingID Windows Login Passwordless on the client machine, run the installer with the following flags:"
-    Write-Host "/EnvID=$global:EnvId `n/AppID=$global:AppId `n/AppSecret=$global:AppSecret"
+  
+    $OIDCDiscoveryEndPoint = $global:baseUrl + "/" + $global:EnvId  + "/as/.well-known/openid-configuration"
+    
+	Write-Host "/OIDCDiscoveryEndpoint=$OIDCDiscoveryEndPoint `n/AppID=$global:AppId `n/AppSecret=$global:AppSecret"
     Write-Host "for additional information, see: https://docs.pingidentity.com/bundle/pingid/page/lkz1629022490771.html"
 }
 
@@ -145,7 +151,10 @@ function createCACertificate{
     Write-Host "Done $certFileName"
 
     Write-Host "Installing certificate to Enterprise NTAuth store..."
-    if ((Read-Host "Do you wish to skip this step? (y/n)").ToLower() -ne "y") {Write-Host "Skiping..." return}
+    if ((Read-Host "Do you wish to skip this step? (y/n)").ToLower() -ne "n") {
+		Write-Host "Skiping..." 
+		return
+	}
     Write-Host 'certutil -dspublish -f "'$caCertCN'.cer" NTAuthCA'
     $error.Clear()
     certutil -dspublish -f "$caCertCN.cer" NTAuthCA
@@ -154,6 +163,8 @@ function createCACertificate{
          Write-Error "Failed To Execute Command: "
          Exit $lastExitCode
     }
+    
+    Write-Host "`n`n`n`n`n"
 
     installCACertGpo -CertFilePath $certFileName
 }
@@ -329,19 +340,21 @@ function kdcCert{
         ;Note 2.5.29.17 is the OID for a SAN extension.
         2.5.29.17 = "{text}"
         _continue_ = "dns='+$dnsName+'&"'
-    $config | Out-File -FilePath $env:TEMP\confg.temp.inf
-    Write-Host 'Creating certificate request: kdc.req'
-    certreq -new $env:TEMP\confg.temp.inf $env:TEMP\kdc.req
+    $config | Out-File -FilePath $env:TEMP\config.temp.inf
+	$kdcRequsetFile="kdc_" + $datetime + ".req"
+	$kdcCertFile=$env:TEMP + "\kdc_" + $datetime + ".cer"
+    Write-Host "Creating certificate request: $kdcRequsetFileName"
+    certreq -new $env:TEMP\config.temp.inf $kdcRequsetFile
     if ($lastExitCode -ne 0) {
          Write-Error "Failed To Execute Command: "
          Exit $lastExitCode
     }
 
     Write-Host "Issuing certificate from the request, using issuace certificate ID: $global:IssuanceCertId"
-    Invoke-MultipartFormDataUpload -Uri $global:appLink'/kdcCSR?validityDuration=31536000' -InFile $env:TEMP\kdc.req -OutFile $env:TEMP\kdc.cer
+    Invoke-MultipartFormDataUpload -Uri $global:appLink'/kdcCSR?validityDuration=31536000' -InFile $kdcRequsetFile -OutFile $kdcCertFile
 
     Write-Host 'Installing certificate to Local Macine, "Personal" key storage'
-    certreq -accept -machine -f $env:TEMP\kdc.cer
+    certreq -accept -machine -f $kdcCertFile
     if ($lastExitCode -ne 0) {
         Write-Error "Failed To Execute Command: "
         Exit $lastExitCode
@@ -537,14 +550,14 @@ function installCACertGpo{
     }
 }
 
-function getBasueUrlFromToken {
+function getBaseUrlFromToken {
     $tokenPayload = (ConvertFrom-SecureString -AsPlainText -SecureString $global:accessToken).Split(".")[1].Replace('-', '+').Replace('_', '/')
     while ($tokenPayload.Length % 4) { $tokenPayload += "=" }
     $tokenByteArray = [System.Convert]::FromBase64String($tokenPayload)
     $tokenArray = [System.Text.Encoding]::ASCII.GetString($tokenByteArray)
     $tokobj = $tokenArray | ConvertFrom-Json
     Write-Debug "Base URL: $($tokobj.aud[0])"    
-    return "$($tokobj.aud[0])/v1"
+    return "$($tokobj.aud[0])"
 }
 
 if ($args[0] -eq "-Debug"){$DebugPreference = "Continue"; Write-Debug "Debug On"}
