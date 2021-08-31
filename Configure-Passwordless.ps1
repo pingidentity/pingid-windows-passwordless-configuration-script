@@ -52,8 +52,7 @@ function Run{
         $global:accessToken =  $global:accessToken | ConvertTo-SecureString -AsPlainText
     }
     
-    $global:baseUrl=getBaseUrlFromToken
-    $global:apiBase=$global:baseUrl + "/v1"
+    $global:apiBase=getBaseUrlFromToken
     
     ############Read Env
     selectEnv
@@ -88,9 +87,9 @@ function Run{
 
     Write-Host "To install PingID Windows Login Passwordless on the client machine, run the installer with the following flags:"
   
-    $OIDCDiscoveryEndPoint = $global:baseUrl + "/" + $global:EnvId  + "/as/.well-known/openid-configuration"
+    $OIDCDiscoveryEndPoint = $global:baseUrl + "/.well-known/openid-configuration"
     
-	Write-Host "/OIDCDiscoveryEndpoint=$OIDCDiscoveryEndPoint `n/AppID=$global:AppId `n/AppSecret=$global:AppSecret"
+	Write-Host "/OIDCDiscoveryEndpoint=$OIDCDiscoveryEndPoint `n/OIDCClientID=$global:AppId `n/OIDCSecret=$global:AppSecret"
     Write-Host "for additional information, see: https://docs.pingidentity.com/bundle/pingid/page/lkz1629022490771.html"
 }
 
@@ -556,8 +555,9 @@ function getBaseUrlFromToken {
     $tokenByteArray = [System.Convert]::FromBase64String($tokenPayload)
     $tokenArray = [System.Text.Encoding]::ASCII.GetString($tokenByteArray)
     $tokobj = $tokenArray | ConvertFrom-Json
+	$global:baseUrl= $tokobj.iss
     Write-Debug "Base URL: $($tokobj.aud[0])"    
-    return "$($tokobj.aud[0])"
+    return "$($tokobj.aud[0])/v1"
 }
 
 if ($args[0] -eq "-Debug"){$DebugPreference = "Continue"; Write-Debug "Debug On"}
