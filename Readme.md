@@ -1,7 +1,7 @@
 # PingID Windows Login Passwordless Configuration Script
 
 This script will help you configure your PingOne environment and your Active Directory Domain Controller for using PingID Windows Login Passwordless.
-Read full documentation [here]http://link.to.docs
+Read full documentation [here](https://docs.pingidentity.com/bundle/pingid/page/lkz1629022490771.html)
 
 This script was built to help speed up PoCs and test/staging environments for qualifying PingID Windows Login Passwordless. For production rollout, please avoid using this script and perform the configurations manually, according to the documentation.
 
