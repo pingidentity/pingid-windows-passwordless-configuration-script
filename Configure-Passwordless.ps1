@@ -335,6 +335,7 @@ function kdcCert{
         Exportable = FALSE
         RequestType = PKCS10
         SuppressDefaults = TRUE
+	HashAlgorithm = SHA256
         [Extensions]
         ;Note 2.5.29.17 is the OID for a SAN extension.
         2.5.29.17 = "{text}"
