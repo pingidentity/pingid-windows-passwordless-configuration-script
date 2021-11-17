@@ -66,9 +66,6 @@ function Run{
     Write-Host "`nSetting ExternalID Attribute as Unique"
     setUniqueDirectoryAttribute
 
-    ############Create Flow Definition 
-    Write-Host "`nCreating Authentication Flow"
-    createFlowDefinition
 
     ############Create SOP
     Write-Host "`nCreating Signon Policy"
@@ -188,91 +185,22 @@ function setUniqueDirectoryAttribute{
 
 }
 
-function createFlowDefinition{
-    $flowDefStr='{
-        "name": "Windows Passwordless - auto-generatd ",
-        "enabled": true,
-        "description": "This is an out-of-the-box flow that can be used to allow users to login to a Windows machine without a password.",
-        "trigger": {
-            "type": "SIGN_ON_POLICY",
-            "next": "lookup-user"
-        },
-        "stepDefinitions": {
-            "lookup-user": {
-                "type": "USER_LOOKUP",
-                "description": "Look up a user in the directory with an identifier to determine the authentication authority.",
-                "configuration": {
-                    "matchAttributes": [
-                        "' + $global:attributeName + '"
-                    ],
-                    "matchPingOneUsersOnly": false
-                },
-                "input": {
-                    "identifier": "${flow.inputs.context.authorizationRequest.loginHint}"
-                },
-                "outlets": {
-                    "PING_ONE_USER_MATCHED": {
-                        "next": "machine-passwordless"
-                    },
-                    "IDENTITY_PROVIDER_USER_MATCHED": {
-                        "next": "machine-passwordless"
-                    }
-                }
-            },
-            "machine-passwordless": {
-                "type": "MACHINE_PASSWORDLESS",
-                "description": "Authenticate the user with PingID. Used for Windows Login - Passwordless.",
-                "configuration": {
-                    "offlineMode": true
-                },
-                "input": {
-                    "user": {
-                        "id": "${steps.lookup-user.outputs.user.id}",
-                        "username": "${steps.lookup-user.outputs.user.username}"
-                    },
-                    "application": {
-                        "id": "${flow.inputs.context.application.id}"
-                    }
-                },
-                "outlets": {
-                    "SUCCEEDED": {
-                        "next": "complete-flow"
-                    }
-                }
-            },
-            "complete-flow": {
-                "type": "COMPLETE_FLOW",
-                "description": "This step redirects the browser to the URI defined by the redirectUri request parameter, if present. The URI needs to be whitelisted in the trigger configuration in order to redirect to a location outside of PingOne.",
-                "configuration": {
-                    "result": "COMPLETE"
-                },
-                "input": {
-                    "context": {
-                        "amr": [
-                            "${steps.machine-passwordless.outputs.amr}"
-                        ],
-                        "user": {
-                            "id": "${steps.lookup-user.outputs.user.id}"
-                        }
-                    }
-                }
-            }
-        }
-    }'
-    
-    $flowDef=ConvertFrom-Json -InputObject $flowDefStr
-    $flowDef.name += $date
-    $flow=Invoke-Api -Method 'POST' -Body $flowDef -endpoint $apiFlowDefinitions
-    $global:flowId = $flow.id
-    $flow
-    Write-Host "Done"
-}
 
 function createSop{
     $sopReq = ConvertFrom-Json -InputObject '{"default":false,"name":"Windows_Passwordless_auto_generatd_","environmentId":null}'
-    $actionsReq = ConvertFrom-Json -InputObject '{"priority":1,"type":"EXPERIENCE","flowDefinition":{"id":""}}'
+    $actionsReqJson = '
+    {
+        "priority":1,
+        "type":"PINGID_WINLOGIN_PASSWORDLESS_AUTHENTICATION",
+        "offlineMode": {
+            "enabled": true
+        },
+        "uniqueUserAttribute": {
+            "name": "' + $global:attributeName + '"
+        }
+    }'
+    $actionsReq = ConvertFrom-Json -InputObject $actionsReqJson
     $sopReq.name += $date
-    $actionsReq.flowDefinition.id=$global:flowId
 
     $sop=Invoke-Api -Method 'POST' -Body $sopReq -Endpoint $apiSignOnPolicies
     $sop
