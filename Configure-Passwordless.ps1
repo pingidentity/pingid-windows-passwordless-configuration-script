@@ -3,15 +3,13 @@
 #2. Select PingOne Environment
 #3. Create CA certificate, install to NTAuth store, install to Trusted Root store in GPO
 #4. Set unique user attribute
-#5. Create Windows Passwordless Flow
-#6. Create SOP, use The created flow
-#7. Create an Application, use the created SOP and CA certificate
-#8. Issue a KDC certificate and install it in the Personal store
+#5. Create SOP, use The created flow
+#6. Create an Application, use the created SOP and CA certificate
+#7. Issue a KDC certificate and install it in the Personal store
 
 $apiEnviornements="environments"
 $apiKeys="keys"
 $apiSchemas="schemas"
-$apiFlowDefinitions="flowDefinitions"
 $apiSignOnPolicies="signOnPolicies"
 $apiApplications="applications"
 $date=Get-Date -UFormat "%m-%d-%Y"
