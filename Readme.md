@@ -7,12 +7,12 @@ This script was built to help speed up PoCs and test/staging environments for qu
 
 ## Prerequisites
 
-1. PingOne with PingID Enviornement 
+1. PingOne with PingID environment 
 2. PingFederate with PingOne provisioner configured
 3. Active Directory Domain Controller with Administrator privileges
 3. PingOne access token
 <!--TODO: Add links to the docs-->
-4. Powershell 7 or above
+5. Powershell 7 or above
 
 ## Usage
 

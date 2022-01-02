@@ -144,11 +144,12 @@ function createCACertificate{
     $certFileName = "$(Get-Location)\$caCertCN.cer"
     Write-Host "Done $certFileName"
 
-    Write-Host "Installing certificate to Enterprise NTAuth store..."
-    if ((Read-Host "Do you wish to skip this step? (y/n)").ToLower() -ne "n") {
+	if ((Read-Host "Do you wish to continue execution of this step? (y/n)").ToLower() -ne "y") 
+	{
 		Write-Host "Skiping..." 
 		return
 	}
+    Write-Host "Installing certificate to Enterprise NTAuth store..."
     Write-Host 'certutil -dspublish -f "'$caCertCN'.cer" NTAuthCA'
     $error.Clear()
     certutil -dspublish -f "$caCertCN.cer" NTAuthCA
