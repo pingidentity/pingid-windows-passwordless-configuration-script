@@ -7,6 +7,8 @@
 #6. Create an Application, use the created SOP and CA certificate
 #7. Issue a KDC certificate and install it in the Personal store
 
+Set-StrictMode -Version Latest
+
 $apiEnviornements="environments"
 $apiKeys="keys"
 $apiSchemas="schemas"
@@ -14,6 +16,12 @@ $apiSignOnPolicies="signOnPolicies"
 $apiApplications="applications"
 $date=Get-Date -UFormat "%m-%d-%Y"
 $datetime=Get-Date -UFormat "%y%m%d%H%M%S"
+$defaultAccountName = 'PingIDSvcACC'
+$defaultGroupName = 'PingIDSvcGR'
+$sourceTemplateName = "SmartcardLogon"
+$defaultTemplateName = "PingIDLogon"
+
+$global:IssuanceCertId = $null
 
 function RunValidations{
     if ($PSVersionTable.PSVersion.Major -lt 7) {
@@ -32,7 +40,7 @@ function RunValidations{
         Write-Error "Active Directory Domain Services not running"
         Exit 1
     }
-	
+
 	$checkKDC=Get-Service 'Kerberos Key Distribution Center'
     if ($checkKDC.Status -ne 'Running'){
         Write-Error "Kerberos Key Distribution Center not running"
@@ -49,21 +57,43 @@ function Run{
     }else{
         $global:accessToken =  $global:accessToken | ConvertTo-SecureString -AsPlainText
     }
-    
+
     $global:apiBase=getBaseUrlFromToken
-    
+
     ############Read Env
     selectEnv
     Write-Host "`nSelected enviornment: " $global:envId " " $global:envName
 
-    ############Create CA
-    Write-Host "`nCreating an issuance (CA) certificate"
-    createCACertificate
+    $caType = $host.UI.PromptForChoice(
+        "What Certification Authority do you wish to use?",
+        "Enter your choice",
+            [System.Management.Automation.Host.ChoiceDescription[]](
+                (New-Object System.Management.Automation.Host.ChoiceDescription "&PingOne","Use PingOne CA"),
+                (New-Object System.Management.Automation.Host.ChoiceDescription "&Microsoft","Use Microsoft CA")
+            ),
+            -1)
+
+    if ($caType -eq 0) {
+        ############Create CA
+        Write-Host "`nCreating an issuance (CA) certificate"
+        createCACertificate
+    } else {
+        if (-not(Get-Command "Add-CATemplate" -errorAction SilentlyContinue)) {
+            Write-Host "`nADCSAdministration module not found"
+            Exit 1
+        }
+
+        $KdsKeyPresent = Get-KdsRootKey -ErrorAction SilentlyContinue
+        if (-not $KdsKeyPresent) {
+            Write-Host "`nKDS Root Key doesn't exist, creating one"
+            Add-KdsRootKey -EffectiveTime ((get-date).addhours(-10))
+            Exit 1
+        }
+    }
 
     ############Make External ID Unique
     Write-Host "`nSetting ExternalID Attribute as Unique"
     setUniqueDirectoryAttribute
-
 
     ############Create SOP
     Write-Host "`nCreating Signon Policy"
@@ -73,18 +103,44 @@ function Run{
     Write-Host "`nCreating OIDC Application"
     createApp
 
-    ###########Create KDC Cert
-    Write-Host "`nCreating KDC certificate"
-    kdcCert
+    if ($caType -eq 0) {
+        ###########Create KDC Cert
+        Write-Host "`nCreating KDC certificate"
+        kdcCert
+    }
+
+    ###########Create ServiceAccount
+    Write-Host "`nCreating Service Account"
+    $ServiceAccount = New-ServiceAccount
+
+    $TemplateName = $null
+    $ServiceAccountName = $null
+    if ($caType -eq 1) {
+        ###########Create CA Template
+        Write-Host "`nCreating CA Template"
+        $TemplateName, $ServiceAccountName = New-Template -ServiceAccount $ServiceAccount
+    }
 
     gpupdate /force
     Write-Host "`n`n`n`n`n"
 
     Write-Host "To install PingID Windows Login Passwordless on the client machine, run the installer with the following flags:"
-  
+
     $OIDCDiscoveryEndPoint = $global:baseUrl + "/.well-known/openid-configuration"
-    
-	Write-Host "/OIDCDiscoveryEndpoint=$OIDCDiscoveryEndPoint `n/OIDCClientID=$global:AppId `n/OIDCSecret=$global:AppSecret"
+
+    $ServiceAccountName ??= ($ServiceAccount ? $ServiceAccount.SamAccountName : $null)
+
+    Write-Host "/OIDCDiscoveryEndpoint=$OIDCDiscoveryEndPoint"
+    Write-Host " /OIDCClientID=$global:AppId"
+    Write-Host " /OIDCSecret=$global:AppSecret"
+    Write-Host " /CAType=$(($caType -eq 0) ? 'PINGONE' : 'MICROSOFT')"
+    if ($ServiceAccountName) {
+        Write-Host " /ServiceAccount=$ServiceAccountName"
+    }
+    if ($caType -eq 1 -and $TemplateName) {
+	Write-Host " /CATemplate=$TemplateName"
+    }
+
     Write-Host "for additional information, see: https://docs.pingidentity.com/bundle/pingid/page/lkz1629022490771.html"
 }
 
@@ -133,10 +189,10 @@ function createCACertificate{
         "signatureAlgorithm"= "SHA256withRSA"
         "usageType"= "ISSUANCE"
         "status"= "VALID"
-    }  
-    
+    }
+
     $cert = Invoke-Api -Method "POST" -Body $request -Endpoint $apiKeys
-    
+
     $certLink = $cert._links.self.href
     $global:IssuanceCertId=$cert.id
     Write-Host "Downloading certificate: $certLink..."
@@ -144,11 +200,11 @@ function createCACertificate{
     $certFileName = "$(Get-Location)\$caCertCN.cer"
     Write-Host "Done $certFileName"
 
-	if ((Read-Host "Do you wish to continue execution of this step? (y/n)").ToLower() -ne "y") 
-	{
-		Write-Host "Skiping..." 
-		return
-	}
+    if ((Read-Host "Do you wish to propagate the CA certificate to Enterprise NTAuth store? (y/n) [n]").ToLower() -ne "y")
+    {
+        Write-Host "Skiping..."
+        return
+    }
     Write-Host "Installing certificate to Enterprise NTAuth store..."
     Write-Host 'certutil -dspublish -f "'$caCertCN'.cer" NTAuthCA'
     $error.Clear()
@@ -158,7 +214,7 @@ function createCACertificate{
          Write-Error "Failed To Execute Command: "
          Exit $lastExitCode
     }
-    
+
     Write-Host "`n`n`n`n`n"
 
     installCACertGpo -CertFilePath $certFileName
@@ -238,7 +294,7 @@ function createApp{
     $appsReq.kerberos.key.id = $global:IssuanceCertId
     $appsReq.name += $date
     $sopAssginmentReq = ConvertFrom-Json -InputObject '{signOnPolicy: {id: ""}, priority: 1}'
-    $sopAssginmentReq.signOnPolicy.id=$global:sopId    
+    $sopAssginmentReq.signOnPolicy.id=$global:sopId
 
     $app=Invoke-API -Method 'POST' -Body $appsReq -Endpoint $apiApplications
     $global:appLink = $app._links.self.href
@@ -252,7 +308,10 @@ function createApp{
 }
 
 function kdcCert{
-    if ((Read-Host "Do you wish to continue execution of this step? (y/n)").ToLower() -ne "y") {Write-Host "Skiping..." return}
+    if ((Read-Host "Do you wish to continue execution of this step? (y/n) [n]").ToLower() -ne "y") {
+	    Write-Host "Skiping..."
+	    return
+    }
     $dnsName=[System.Net.DNS]::GetHostByName($Null).hostname
     $config='
         [newrequest]
@@ -288,16 +347,168 @@ function kdcCert{
     }
 }
 
+function IsUniqueOID {
+    param(
+        [Parameter(Mandatory=$true)]
+        $TemplateOID,
+        [Parameter(Mandatory=$true)]
+        $ConfigNC
+    )
+    $Search = Get-ADObject `
+        -SearchBase "CN=OID,CN=Public Key Services,CN=Services,$ConfigNC" `
+        -Filter "msPKI-Cert-Template-OID -eq '$TemplateOID'" `
+        -SearchScope Subtree
+    if ($Search) {$False} else {$True}
+}
+
+function New-TemplateOID {
+    param(
+        [Parameter(Mandatory=$true)]
+        $ConfigNC
+    )
+    do {
+        $OID_Part_1 = Get-Random -Minimum 10000000 -Maximum 99999999
+        $OID_Part_2 = Get-Random -Minimum 10000000 -Maximum 99999999
+        $OID_Forest = Get-ADObject `
+            -Identity "CN=OID,CN=Public Key Services,CN=Services,$ConfigNC" `
+            -Properties msPKI-Cert-Template-OID |
+            Select-Object -ExpandProperty msPKI-Cert-Template-OID
+
+        $msPKICertTemplateOID = "$OID_Forest.$OID_Part_1.$OID_Part_2"
+    } until (IsUniqueOID -TemplateOID $msPKICertTemplateOID -ConfigNC $ConfigNC)
+
+    return $msPKICertTemplateOID
+}
+
+function New-Template {
+    param( [Object]$ServiceAccount )
+    do {
+        $response = Read-Host -Prompt "Do you wish to continue execution of this step? (y/n) [n]"
+        if (-not $response -or $response -eq "n") {
+            Write-Host "Skiping..."
+            return $null, $null
+        }
+    } until ($response -eq 'y')
+
+    if ($null -eq $ServiceAccount) {
+        $ServiceAccountName = Read-Host -Prompt "Service Account name [$defaultAccountName]"
+        if ([string]::IsNullOrWhiteSpace($ServiceAccountName)) {
+            $ServiceAccountName = $defaultAccountName
+        }
+        $ServiceAccount = Get-ADServiceAccount -Filter "Name -eq '$ServiceAccountName'";
+    }
+
+    $TemplateName = Read-Host -Prompt "CA template name [$defaultTemplateName]"
+    if ([string]::IsNullOrWhiteSpace($TemplateName)) {
+        $TemplateName = $defaultTemplateName
+    }
+
+    $ConfigContext = ([ADSI]"LDAP://RootDSE").ConfigurationNamingContext
+    $ADSI = [ADSI]"LDAP://CN=Certificate Templates,CN=Public Key Services,CN=Services,$ConfigContext"
+
+    $existingTemplate = $ADSI.psbase.children | Where-Object {$_.Name -eq $TemplateName}
+    if ($null -ne $existingTemplate) {
+        Write-Host "Template with $TemplateName already exist"
+	return $TemplateName, $ServiceAccount.SamAccountName
+    }
+
+    $SrcTempl = $ADSI.psbase.children | Where-Object {$_.Name -eq $SourceTemplateName}
+
+    $NewTempl = $ADSI.Create("pKICertificateTemplate", "CN=$TemplateName")
+    $NewTempl.Put('distinguishedName', "CN=$TemplateName,CN=Certificate Templates,CN=Public Key Services,CN=Services,$ConfigContext") | Out-Null
+    $NewTempl.Put('displayName', $TemplateName) | Out-Null
+    $NewTempl.SetInfo() | Out-Null
+
+    $NewTempl.flags = "131584"
+    $NewTempl.revision = "100"
+    $NewTempl.Put('pKIDefaultKeySpec', $SrcTempl.pKIDefaultKeySpec.ToString()) | Out-Null
+    $NewTempl.'msPKI-Template-Schema-Version' = "2"
+    $NewTempl.'msPKI-Template-Minor-Revision' = "3"
+    $NewTempl.pKIMaxIssuingDepth = $SrcTempl.pKIMaxIssuingDepth
+    $NewTempl.pKICriticalExtensions.AddRange($SrcTempl.pKICriticalExtensions) | Out-Null
+    $NewTempl.pKICriticalExtensions.Add("2.5.29.7") | Out-Null
+    $NewTempl.pKIExtendedKeyUsage = $SrcTempl.pKIExtendedKeyUsage
+    $NewTempl.'msPKI-RA-Signature' = $SrcTempl.'msPKI-RA-Signature'
+    $NewTempl.'msPKI-Enrollment-Flag' = $SrcTempl.'msPKI-Enrollment-Flag'
+    $NewTempl.'msPKI-Private-Key-Flag' = $SrcTempl.'msPKI-Private-Key-Flag'
+    $NewTempl.'msPKI-Certificate-Name-Flag' = $SrcTempl.'msPKI-Certificate-Name-Flag'
+    $NewTempl.'msPKI-Minimal-Key-Size' = $SrcTempl.'msPKI-Minimal-Key-Size'
+    $NewTempl.'msPKI-Cert-Template-OID' = New-TemplateOID -ConfigNC $ConfigContext
+    $NewTempl.Put('msPKI-Certificate-Application-Policy', @("1.3.6.1.5.5.7.3.2", "1.3.6.1.4.1.311.20.2.2")) | Out-Null
+
+    $NewTempl.pKIKeyUsage = $SrcTempl.pKIKeyUsage
+    $NewTempl.pKIExpirationPeriod = $SrcTempl.pKIExpirationPeriod
+    $NewTempl.pKIOverlapPeriod = $SrcTempl.pKIOverlapPeriod
+    $NewTempl.SetInfo() | Out-Null
+
+    $Rule = New-Object System.DirectoryServices.ActiveDirectoryAccessRule( `
+        (New-Object System.Security.Principal.SecurityIdentifier $ServiceAccount.SID), `
+        [System.DirectoryServices.ActiveDirectoryRights]"WriteProperty, GenericRead, WriteDacl, WriteOwner, ExtendedRight", `
+        [System.Security.AccessControl.AccessControlType]"Allow");
+    $NewTempl.ObjectSecurity.SetAccessRule($Rule)
+    $NewTempl.CommitChanges();
+
+    # Add the certificate template to the certificate authority
+    $p = Start-Process "C:\Windows\System32\certtmpl.msc" -PassThru
+    Start-Sleep 2
+    $p | Stop-Process
+    Add-CATemplate -Name $TemplateName -Force
+    return $TemplateName, $ServiceAccount.SamAccountName
+}
+
+function New-ServiceAccount {
+    param ([string]$GroupName)
+    do {
+        $response = Read-Host -Prompt "Do you wish to continue execution of this step? (y/n) [n]"
+        if (-not $response -or $response -eq "n") {
+            Write-Host "Skiping..."
+            return
+        }
+    } until ($response -eq 'y')
+
+    $GroupName = Read-Host -Prompt "Security Group name [$defaultGroupName]"
+    if ([string]::IsNullOrWhiteSpace($GroupName)) {
+        $GroupName = $defaultGroupName
+    }
+
+    if (Get-ADGroup -Filter "Name -eq '$GroupName'") {
+        Write-Host "Security Group $GroupName already exists";
+    } else {
+        Write-Host "Creating Security Group $GroupName";
+        $Group = New-ADGroup $GroupName -GroupScope Global -PassThru -Description "Computers that uses PingID passwordless"
+        if ($Group) {
+            Write-Host "Adding Domain Computers to the group"
+            Add-AdGroupMember -Identity $GroupName -Members "Domain Computers"
+        }
+    }
+
+    $AccountName = Read-Host -Prompt "Service Account name [$defaultAccountName]"
+    if ([string]::IsNullOrWhiteSpace($AccountName)) {
+        $AccountName = $defaultAccountName
+    }
+
+    $ServiceAccount = Get-ADServiceAccount -Filter "Name -eq '$AccountName'"
+    if ($ServiceAccount) {
+        Write-Host "Managed Service Account $AccountName alredy exists";
+    } else {
+        Write-Host "Creating $AccountName"
+        $ServiceAccount = New-ADServiceAccount -name $AccountName -dnshostname $env:computername -PrincipalsAllowedToRetrieveManagedPassword $GroupName -PassThru
+        Write-Host "Adding the service account to the computer"
+        Add-ADComputerServiceAccount -Identity $env:computername -ServiceAccount $AccountName
+    }
+    return $ServiceAccount
+}
+
 #Helper functions
 function Api-Path-Builder{
     [CmdletBinding()]
-	param(     
-        [string][Parameter()]$Endpoint,  
+	param(
+        [string][Parameter()]$Endpoint,
         [string][Parameter()]$ResourceId,
         [string][Parameter()]$QueryParams
     )
 
-    
+
     if ($Endpoint){
         if($ResourceId){
             $url = "$global:apiBase/$apiEnviornements/$global:envId/$Endpoint/$ResourceId"
@@ -342,7 +553,7 @@ function Invoke-API{
                 'accept' = 'application/json'
             }
         }
-        
+
 
         Write-Debug "$Method $_url $OutFile"
         ($headers | Out-String -Stream) -ne '' | select -Skip 2  | Write-Debug
@@ -358,11 +569,10 @@ function Invoke-API{
             return Invoke-RestMethod -Method $Method -Uri $_url -Authentication 'OAuth' -Token $global:accessToken -ContentType "application/json" -Headers $headers  -OutFile $OutFile
         }
     }
-    catch { 
+    catch {
         if ($_.Exception.Response){
             Write-Error $_.Exception.Response
         }else{
-            
             Write-Error $_.Exception
         }
         Exit 1
@@ -384,7 +594,7 @@ function Invoke-MultipartFormDataUpload{
         $httpClientHandler = New-Object System.Net.Http.HttpClientHandler
         $httpClient = New-Object System.Net.Http.Httpclient $httpClientHandler
         $packageFileStream = New-Object System.IO.FileStream @("$pwd\$InFile", [System.IO.FileMode]::Open)
-        
+
         $contentDispositionHeaderValue = New-Object System.Net.Http.Headers.ContentDispositionHeaderValue "form-data"
         $contentDispositionHeaderValue.Name = "file"
         $contentDispositionHeaderValue.FileName = (Split-Path $InFile -leaf)
@@ -395,7 +605,7 @@ function Invoke-MultipartFormDataUpload{
         $streamContent.Headers.ContentType = New-Object System.Net.Http.Headers.MediaTypeHeaderValue $ContentType
         $content = New-Object System.Net.Http.MultipartFormDataContent
         $content.Add($streamContent)
-    
+
         $httpClient.DefaultRequestHeaders
         $response = $httpClient.PostAsync($Uri, $content).Result
         if (!$response.IsSuccessStatusCode){
@@ -415,7 +625,7 @@ function Invoke-MultipartFormDataUpload{
         if ($null -ne $httpClient){ $httpClient.Dispose() }
         if ($null -ne $response){ $response.Dispose() }
         if ($null -ne $streamContent) { $streamContent.Dispose() }
-        if ($null -ne $packageFileStream) { 
+        if ($null -ne $packageFileStream) {
             $packageFileStream.Close()
             $packageFileStream.Dispose()
         }
@@ -430,7 +640,10 @@ function installCACertGpo{
     )
 
     Write-Host "Installing CA Certificate to Group Policy..."
-    if ((Read-Host "Do you wish to continue execution this step? (y/n)").ToLower() -ne "y") {Write-Host "Skiping..." return}
+    if ((Read-Host "Do you wish to continue execution this step? (y/n) [n]").ToLower() -ne "y") {
+	    Write-Host "Skiping..."
+	    return
+    }
     $defaultPolicyName = "Default Domain Policy"
     if (!($policyName = Read-Host "GPO Name [$defaultPolicyName]")) { $policyName = $defaultPolicyName }
     $gpo = Get-GPO -Name $policyName
@@ -445,7 +658,7 @@ function installCACertGpo{
         $certPoliciesRegistryKey = "HKEY_LOCAL_MACHINE\SOFTWARE\Policies\Microsoft\SystemCertificates\Root\Certificates\$($Certificate.Thumbprint)"
         $tempRegistryKey = "HKLM:\Software\Microsoft\SystemCertificates\Temp\Certificates\$($Certificate.Thumbprint)"
         Write-Debug "Certificate thumbprint $($Certificate.Thumbprint)"
-        
+
         try{
             if (!(Test-Path "CERT:\LocalMachines\Temp")) {
                 Write-Host "Creating temp certificate store"
@@ -457,7 +670,7 @@ function installCACertGpo{
             Write-Error $_.Exception
             Exit 1
         }
-        Import-Certificate $CertFilePath -CertStoreLocation "CERT:\LocalMachine\Temp" 
+        Import-Certificate $CertFilePath -CertStoreLocation "CERT:\LocalMachine\Temp"
         $importKeyValue = (Get-ItemProperty -Path $tempRegistryKey).Blob
 
         if ($deleteStore){
@@ -467,7 +680,7 @@ function installCACertGpo{
 
         Write-Debug "Import GPO Path: $certPoliciesRegistryKey"
         if (!(Get-GPRegistryValue -Guid $GpoGuid -Key $certPoliciesRegistryKey -ErrorAction silentlycontinue)) {
-            Set-GPRegistryValue -Guid $GpoGuid -Key $certPoliciesRegistryKey -ValueName 'Blob' -Type Binary -Value $importKeyValue 
+            Set-GPRegistryValue -Guid $GpoGuid -Key $certPoliciesRegistryKey -ValueName 'Blob' -Type Binary -Value $importKeyValue
          }else{
              Write-Host "Certificate already exists in Trusted Root CA store"
          }
@@ -484,14 +697,10 @@ function getBaseUrlFromToken {
     $tokenArray = [System.Text.Encoding]::ASCII.GetString($tokenByteArray)
     $tokobj = $tokenArray | ConvertFrom-Json
 	$global:baseUrl= $tokobj.iss
-    Write-Debug "Base URL: $($tokobj.aud[0])"    
+    Write-Debug "Base URL: $($tokobj.aud[0])"
     return "$($tokobj.aud[0])/v1"
 }
 
-if ($args[0] -eq "-Debug"){$DebugPreference = "Continue"; Write-Debug "Debug On"}
+if (($args.length > 0) -and ($args[0] -eq "-Debug")) { $DebugPreference = "Continue"; Write-Debug "Debug On" }
 Run
-if ($args[0] -eq "-Debug"){$DebugPreference = "SilentlyContinue"}
-
-
-
-
+if (($args.length > 0) -and ($args[0] -eq "-Debug")) { $DebugPreference = "SilentlyContinue" }
